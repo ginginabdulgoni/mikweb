@@ -54,7 +54,7 @@ return [
         'enabled' => (bool) env('MIKWEB_CIRCUIT_ENABLED', true),
         'failure_threshold' => (int) env('MIKWEB_CIRCUIT_FAILURE_THRESHOLD', 5),
         'cooldown_seconds' => (int) env('MIKWEB_CIRCUIT_COOLDOWN', 30),
-        'cache_store' => env('MIKWEB_CIRCUIT_CACHE_STORE', 'redis'),
+        'cache_store' => env('MIKWEB_CIRCUIT_CACHE_STORE', null),
     ],
 
     /*
@@ -68,7 +68,7 @@ return [
     */
 
     'locks' => [
-        'store' => env('MIKWEB_LOCK_STORE', 'redis'),
+        'store' => env('MIKWEB_LOCK_STORE', null),
         'ttl_seconds' => (int) env('MIKWEB_LOCK_TTL', 30),
         'wait_seconds' => (int) env('MIKWEB_LOCK_WAIT', 10),
     ],
