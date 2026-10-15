@@ -36,6 +36,7 @@ use App\Http\Controllers\Router\Modules\ToolsController;
 use App\Http\Controllers\Router\Modules\WireguardController;
 use App\Http\Controllers\Router\RouterConnectionController;
 use App\Http\Controllers\Router\RouterController;
+use App\Http\Controllers\SystemUpdateController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', fn () => redirect()->route('dashboard'));
@@ -336,4 +337,9 @@ Route::middleware('auth')->group(function () {
     Route::post('settings/security/2fa', [SecurityController::class, 'enable'])->name('settings.2fa.enable');
     Route::post('settings/security/2fa/confirm', [SecurityController::class, 'confirm'])->name('settings.2fa.confirm');
     Route::delete('settings/security/2fa', [SecurityController::class, 'disable'])->name('settings.2fa.disable');
+
+    // ── System Update ─────────────────────────────────────────────────
+    Route::get('system/update', [SystemUpdateController::class, 'index'])->name('system.update.index');
+    Route::post('system/update/check', [SystemUpdateController::class, 'check'])->name('system.update.check');
+    Route::post('system/update/apply', [SystemUpdateController::class, 'apply'])->name('system.update.apply');
 });

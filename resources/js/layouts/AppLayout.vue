@@ -21,6 +21,7 @@ const globalNav: NavItem[] = [
     { label: 'Automation', route: 'automation.index', icon: '⚙', ready: true },
     { label: 'Bulk Ops', route: 'bulk.index', icon: '≣', ready: true },
     { label: 'Search', route: 'search.index', icon: '⌕', ready: true },
+    { label: 'System Update', route: 'system.update.index', icon: '🚀', ready: true },
 ];
 
 // ── WinBox-style device menu (requires an active router) ─────────────
@@ -235,6 +236,7 @@ function logout() {
                             <div class="text-sm font-medium">{{ user?.name }}</div>
                             <div class="text-[11px] text-zinc-500">{{ user?.organization?.name }}</div>
                         </div>
+                        <Link :href="route('system.update.index')" class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">Update</Link>
                         <Link :href="route('settings.security')" class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">Security</Link>
                         <button class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800" @click="logout">Sign out</button>
                     </div>
