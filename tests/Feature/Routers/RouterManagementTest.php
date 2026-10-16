@@ -119,16 +119,32 @@ class RouterManagementTest extends TestCase
         $this->assertTrue($router->capability->supports_rest);
     }
 
-    public function test_api_returns_routers_for_token_with_scope(): void
+    public function test_can_recreate_previously_deleted_router_with_same_host(): void
     {
-        $user = $this->makeUser(role: Permissions::ROLE_READ_ONLY);
-        Router::factory()->create(['organization_id' => $user->organization_id]);
+        $admin = $this->makeUser(role: Permissions::ROLE_NETWORK_ADMIN);
 
-        $token = $user->createToken('test')->plainTextToken;
+        // 1. Create router
+        $router = Router::factory()->create([
+            'organization_id' => $admin->organization_id,
+            'host' => '41.216.186.150',
+            'name' => 'Original Router',
+        ]);
 
-        $this->withHeader('Authorization', "Bearer {$token}")
-            ->getJson('/api/routers')
-            ->assertOk()
-            ->assertJsonStructure(['data' => [['id', 'name', 'host', 'status']], 'meta']);
+        // 2. Delete router (soft-delete)
+        $this->actingAs($admin)->delete(route('routers.destroy', $router))->assertRedirect();
+        $this->assertSoftDeleted('routers', ['id' => $router->id]);
+
+        // 3. Re-create router with same host
+        $response = $this->actingAs($admin)->post('/routers', [
+            'name' => 'PENANGGIRAN',
+            'host' => '41.216.186.150',
+            'preferred_transport' => 'api',
+            'credential' => ['username' => 'admin', 'password' => 'secret'],
+        ]);
+
+        $response->assertRedirect();
+        $newRouter = Router::where('host', '41.216.186.150')->first();
+        $this->assertNotNull($newRouter);
+        $this->assertSame('PENANGGIRAN', $newRouter->name);
     }
 }

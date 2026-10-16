@@ -21,6 +21,16 @@ class SaveRouter
     public function create(int $organizationId, int $userId, array $data): Router
     {
         return DB::transaction(function () use ($organizationId, $userId, $data) {
+            $host = $data['host'] ?? null;
+            if ($host) {
+                // If a soft-deleted router with this host exists in this organization,
+                // permanently remove it so the new router can be registered with fresh configuration.
+                Router::onlyTrashed()
+                    ->where('organization_id', $organizationId)
+                    ->where('host', $host)
+                    ->forceDelete();
+            }
+
             $router = new Router($this->routerAttributes($data));
             $router->organization_id = $organizationId;
             $router->created_by = $userId;
@@ -38,6 +48,14 @@ class SaveRouter
     public function update(Router $router, array $data): Router
     {
         return DB::transaction(function () use ($router, $data) {
+            $host = $data['host'] ?? null;
+            if ($host && $host !== $router->host) {
+                Router::onlyTrashed()
+                    ->where('organization_id', $router->organization_id)
+                    ->where('host', $host)
+                    ->forceDelete();
+            }
+
             $router->fill($this->routerAttributes($data))->save();
             $this->syncCredentials($router, $data);
 
