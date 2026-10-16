@@ -34,8 +34,24 @@ class MonitoringController extends Controller
             ->get()
             ->keyBy('router_id');
 
-        $selectedId = (int) ($request->integer('router') ?: ($routers->first()->id ?? 0));
+        $selectedIdsInput = $request->input('routers');
+        if (is_string($selectedIdsInput)) {
+            $selectedIds = array_values(array_filter(array_map('intval', explode(',', $selectedIdsInput))));
+        } elseif (is_array($selectedIdsInput)) {
+            $selectedIds = array_values(array_filter(array_map('intval', $selectedIdsInput)));
+        } else {
+            $selectedIds = [];
+        }
+
+        if (empty($selectedIds)) {
+            $primaryId = (int) ($request->integer('router') ?: ($routers->first()->id ?? 0));
+            $selectedIds = $primaryId > 0 ? [$primaryId] : [];
+        }
+
+        $selectedIds = $routers->whereIn('id', $selectedIds)->pluck('id')->values()->all();
+        $selectedId = $selectedIds[0] ?? (int) ($routers->first()->id ?? 0);
         $range = $request->string('range')->toString() ?: '6h';
+        $tab = $request->string('tab')->toString() ?: 'traffic';
 
         $since = match ($range) {
             '1h' => now()->subHour(),
@@ -46,11 +62,13 @@ class MonitoringController extends Controller
         $timeFormat = $range === '7d' ? 'd/m H:i' : 'H:i';
 
         $series = RouterMetric::query()
-            ->where('router_id', $selectedId)
+            ->whereIn('router_id', $selectedIds)
             ->where('recorded_at', '>=', $since)
             ->orderBy('recorded_at')
-            ->limit(500)
+            ->limit(1000)
             ->get();
+
+        $primarySeries = $series->where('router_id', $selectedId)->values();
 
         $onlineCount = $routers->where('status', RouterStatus::Online)->count();
         $unreachableCount = $routers->where('status', RouterStatus::Unreachable)->count();
@@ -87,14 +105,16 @@ class MonitoringController extends Controller
                 ];
             })->values(),
             'selectedRouter' => $selectedId,
+            'selectedRouters' => $selectedIds,
             'selectedRouterName' => $selectedRouterModel?->name ?? 'Router',
             'range' => $range,
+            'initialTab' => $tab,
             'kpis' => $kpis,
             'chart' => [
-                'labels' => $series->map(fn ($m) => $m->recorded_at?->format($timeFormat))->values(),
-                'cpu' => $series->map(fn ($m) => $m->cpu_load)->values(),
-                'mem' => $series->map(fn ($m) => $m->memoryPercent())->values(),
-                'latency' => $series->map(fn ($m) => $m->latency_ms)->values(),
+                'labels' => $primarySeries->map(fn ($m) => $m->recorded_at?->format($timeFormat))->values(),
+                'cpu' => $primarySeries->map(fn ($m) => $m->cpu_load)->values(),
+                'mem' => $primarySeries->map(fn ($m) => $m->memoryPercent())->values(),
+                'latency' => $primarySeries->map(fn ($m) => $m->latency_ms)->values(),
             ],
         ]);
     }
