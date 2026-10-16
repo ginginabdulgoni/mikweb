@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { router as inertiaRouter } from '@inertiajs/vue3';
 import { use } from 'echarts/core';
 import { LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components';
@@ -36,17 +37,23 @@ const props = withDefaults(
         pollIntervalMs?: number;
         isGlobalPaused?: boolean;
         heightClass?: string;
+        canMoveLeft?: boolean;
+        canMoveRight?: boolean;
     }>(),
     {
-        pollIntervalMs: 2000,
+        pollIntervalMs: 10000,
         isGlobalPaused: false,
         heightClass: 'h-48',
+        canMoveLeft: false,
+        canMoveRight: false,
     }
 );
 
 const emit = defineEmits<{
     (e: 'remove', routerId: number): void;
     (e: 'trafficUpdate', payload: LiveTrafficPayload): void;
+    (e: 'moveLeft'): void;
+    (e: 'moveRight'): void;
 }>();
 
 const interfaces = ref<InterfaceItem[]>([]);
@@ -54,6 +61,8 @@ const selectedInterface = ref<string>('ether1');
 const isLoadingInterfaces = ref(false);
 const isPaused = ref(false);
 const lastError = ref<string | null>(null);
+const isConnected = ref(false);
+const isInitialLoading = ref(true);
 const capacityMbps = ref<number | null>(null);
 const chartRef = ref<any>(null);
 
@@ -69,8 +78,10 @@ const timestamps = ref<string[]>([]);
 const rxData = ref<number[]>([]);
 const txData = ref<number[]>([]);
 
-let timer: number | null = null;
+let pollTimeout: number | null = null;
+let isFetching = false;
 let abortController: AbortController | null = null;
+let unregisterNavHook: (() => void) | null = null;
 
 function formatSpeed(bps: number): string {
     if (bps >= 1_000_000_000) {
@@ -117,10 +128,17 @@ async function loadInterfaces(): Promise<void> {
                     selectedInterface.value = firstRunning ? firstRunning.name : list[0].name;
                 }
             }
+        } else {
+            const errData = await res.json().catch(() => ({}));
+            lastError.value = errData.message ?? `HTTP ${res.status}: Gagal memuat antarmuka router`;
+            isConnected.value = false;
+            isInitialLoading.value = false;
         }
-    } catch {
-        // Fallback to default ether1 if loading interfaces fails
+    } catch (err: any) {
         interfaces.value = [];
+        lastError.value = err.message ?? 'Gagal menghubungi router';
+        isConnected.value = false;
+        isInitialLoading.value = false;
     } finally {
         isLoadingInterfaces.value = false;
     }
@@ -130,7 +148,11 @@ async function fetchTraffic(): Promise<void> {
     if (isPaused.value || props.isGlobalPaused || !props.routerId || !selectedInterface.value) {
         return;
     }
+    if (isFetching) {
+        return; // Prevent overlapping fetch if previous request is still in-flight
+    }
 
+    isFetching = true;
     abortController?.abort();
     abortController = new AbortController();
 
@@ -151,6 +173,8 @@ async function fetchTraffic(): Promise<void> {
 
         const data = await res.json();
         if (data.success) {
+            isConnected.value = true;
+            isInitialLoading.value = false;
             lastError.value = null;
             currentRxBps.value = Number(data.rx_bps ?? 0);
             currentTxBps.value = Number(data.tx_bps ?? 0);
@@ -189,6 +213,8 @@ async function fetchTraffic(): Promise<void> {
                 isError: false,
             });
         } else {
+            isConnected.value = false;
+            isInitialLoading.value = false;
             lastError.value = data.error ?? 'Gagal membaca traffic';
             emit('trafficUpdate', {
                 routerId: props.routerId,
@@ -204,21 +230,35 @@ async function fetchTraffic(): Promise<void> {
         }
     } catch (e: any) {
         if (e.name !== 'AbortError') {
+            isConnected.value = false;
+            isInitialLoading.value = false;
             lastError.value = e.message ?? 'Gagal terhubung ke router';
         }
+    } finally {
+        isFetching = false;
+        // Schedule next poll ONLY after this request completes to prevent any request storms
+        if (!isPaused.value && !props.isGlobalPaused && !document.hidden) {
+            scheduleNextPoll();
+        }
     }
+}
+
+function scheduleNextPoll(): void {
+    if (pollTimeout !== null) {
+        clearTimeout(pollTimeout);
+    }
+    pollTimeout = window.setTimeout(fetchTraffic, props.pollIntervalMs);
 }
 
 function startPolling(): void {
     stopPolling();
     fetchTraffic();
-    timer = window.setInterval(fetchTraffic, props.pollIntervalMs);
 }
 
 function stopPolling(): void {
-    if (timer !== null) {
-        clearInterval(timer);
-        timer = null;
+    if (pollTimeout !== null) {
+        clearTimeout(pollTimeout);
+        pollTimeout = null;
     }
     abortController?.abort();
 }
@@ -227,6 +267,8 @@ function togglePause(): void {
     isPaused.value = !isPaused.value;
     if (!isPaused.value) {
         fetchTraffic();
+    } else {
+        stopPolling();
     }
 }
 
@@ -272,12 +314,19 @@ watch(
 
 onMounted(async () => {
     document.addEventListener('visibilitychange', handleVisibility);
+    // When navigating to any other page in the application, immediately cancel all pending traffic fetches
+    unregisterNavHook = inertiaRouter.on('before', () => {
+        stopPolling();
+    });
     await loadInterfaces();
     startPolling();
 });
 
 onUnmounted(() => {
     document.removeEventListener('visibilitychange', handleVisibility);
+    if (unregisterNavHook) {
+        unregisterNavHook();
+    }
     stopPolling();
 });
 
@@ -402,29 +451,77 @@ const chartOption = computed(() => {
     <div class="flex flex-col rounded-xl border border-zinc-200 bg-white p-4 shadow-xs transition-shadow hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900">
         <!-- Card Header -->
         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-100 pb-3 dark:border-zinc-800">
-            <!-- Router Info & Status -->
+            <!-- Router Info & Status with Drag Handle -->
             <div class="flex items-center gap-2">
+                <!-- Drag Grip Icon -->
+                <div
+                    class="cursor-grab active:cursor-grabbing p-0.5 text-zinc-300 transition-colors hover:text-zinc-600 dark:text-zinc-600 dark:hover:text-zinc-300"
+                    title="Klik dan tahan untuk menggeser posisi kartu"
+                >
+                    <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
+                        <circle cx="9" cy="6" r="1.5" />
+                        <circle cx="15" cy="6" r="1.5" />
+                        <circle cx="9" cy="12" r="1.5" />
+                        <circle cx="15" cy="12" r="1.5" />
+                        <circle cx="9" cy="18" r="1.5" />
+                        <circle cx="15" cy="18" r="1.5" />
+                    </svg>
+                </div>
+
                 <span
                     class="h-2.5 w-2.5 rounded-full transition-colors"
                     :class="{
-                        'bg-emerald-500 animate-pulse': !isPaused && !isGlobalPaused && !lastError,
-                        'bg-amber-500': (isPaused || isGlobalPaused) && !lastError,
-                        'bg-rose-500': !!lastError,
+                        'bg-emerald-500 animate-pulse': isConnected && !isPaused && !isGlobalPaused,
+                        'bg-amber-500': isConnected && (isPaused || isGlobalPaused),
+                        'bg-rose-500': !isConnected && !isInitialLoading,
+                        'bg-zinc-400 animate-pulse': isInitialLoading,
                     }"
-                    :title="lastError ? `Error: ${lastError}` : isPaused || isGlobalPaused ? 'Paused' : 'Streaming Realtime'"
+                    :title="!isConnected && lastError ? `Terputus: ${lastError}` : isPaused || isGlobalPaused ? 'Paused' : isConnected ? 'Terhubung (Streaming)' : 'Menghubungkan...'"
                 />
                 <div>
-                    <h3 class="text-sm font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                    <h3 class="flex items-center gap-1.5 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                         {{ routerName }}
+                        <span
+                            v-if="!isConnected && !isInitialLoading"
+                            class="rounded bg-rose-50 px-1.5 py-0.2 text-[10px] font-bold text-rose-600 dark:bg-rose-950/60 dark:text-rose-400"
+                        >
+                            Disconnect
+                        </span>
                     </h3>
                     <span class="font-mono text-[11px] text-zinc-400 dark:text-zinc-500">{{ routerHost }}</span>
                 </div>
             </div>
 
-            <!-- Interface Selector & Actions -->
-            <div class="flex items-center gap-1.5">
+            <!-- Interface Selector, Move Buttons & Actions -->
+            <div class="flex items-center gap-1">
+                <!-- Move Left Button -->
+                <button
+                    v-if="canMoveLeft"
+                    type="button"
+                    class="rounded p-1 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                    title="Geser posisi kartu ke kiri"
+                    @click.stop="emit('moveLeft')"
+                >
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+                    </svg>
+                </button>
+
+                <!-- Move Right Button -->
+                <button
+                    v-if="canMoveRight"
+                    type="button"
+                    class="rounded p-1 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                    title="Geser posisi kartu ke kanan"
+                    @click.stop="emit('moveRight')"
+                >
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                </button>
+
                 <!-- Interface Select -->
-                <div class="relative">
+                <div class="relative ml-1">
                     <select
                         v-if="interfaces.length > 0"
                         v-model="selectedInterface"
@@ -440,12 +537,13 @@ const chartOption = computed(() => {
                         v-model="selectedInterface"
                         @change="onInterfaceChange"
                         placeholder="ether1"
-                        class="w-24 rounded-md border border-zinc-300 bg-zinc-50 px-2 py-1 font-mono text-xs text-zinc-800 focus:border-indigo-500 focus:outline-hidden dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                        class="w-20 rounded-md border border-zinc-300 bg-zinc-50 px-2 py-1 font-mono text-xs text-zinc-800 focus:border-indigo-500 focus:outline-hidden dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
                     />
                 </div>
 
-                <!-- Single Pause Button -->
+                <!-- Single Pause Button (Hanya jika connect) -->
                 <button
+                    v-if="isConnected"
                     type="button"
                     class="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
                     :title="isPaused ? 'Resume Router Ini' : 'Pause Router Ini'"
@@ -467,97 +565,152 @@ const chartOption = computed(() => {
             </div>
         </div>
 
-        <!-- Live KPI Badges -->
-        <div class="mt-3 grid grid-cols-2 gap-2 text-xs">
-            <!-- Rx Badge -->
-            <div class="rounded-lg border border-emerald-100 bg-emerald-50/70 p-2 dark:border-emerald-950 dark:bg-emerald-950/20">
-                <div class="flex items-center justify-between text-[11px] font-medium text-emerald-800 dark:text-emerald-300">
-                    <span>⬇ Rx (Download)</span>
-                    <span class="text-[10px] opacity-75">{{ formatPackets(currentRxPackets) }}</span>
+        <!-- ============================================================== -->
+        <!-- STATE 1: CONNECTED (Info Rx/Tx, Realtime Chart & Toolbar)       -->
+        <!-- ============================================================== -->
+        <template v-if="isConnected">
+            <!-- Live KPI Badges -->
+            <div class="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <!-- Rx Badge -->
+                <div class="rounded-lg border border-emerald-100 bg-emerald-50/70 p-2 dark:border-emerald-950 dark:bg-emerald-950/20">
+                    <div class="flex items-center justify-between text-[11px] font-medium text-emerald-800 dark:text-emerald-300">
+                        <span>⬇ Rx (Download)</span>
+                        <span class="text-[10px] opacity-75">{{ formatPackets(currentRxPackets) }}</span>
+                    </div>
+                    <div class="mt-1 font-mono text-base font-bold text-emerald-700 dark:text-emerald-400">
+                        {{ formatSpeed(currentRxBps) }}
+                    </div>
+                    <div class="mt-0.5 text-[10px] text-emerald-600/80 dark:text-emerald-500">
+                        Peak: {{ formatSpeed(peakRxBps) }}
+                    </div>
                 </div>
-                <div class="mt-1 font-mono text-base font-bold text-emerald-700 dark:text-emerald-400">
-                    {{ formatSpeed(currentRxBps) }}
-                </div>
-                <div class="mt-0.5 text-[10px] text-emerald-600/80 dark:text-emerald-500">
-                    Peak: {{ formatSpeed(peakRxBps) }}
+
+                <!-- Tx Badge -->
+                <div class="rounded-lg border border-indigo-100 bg-indigo-50/70 p-2 dark:border-indigo-950 dark:bg-indigo-950/20">
+                    <div class="flex items-center justify-between text-[11px] font-medium text-indigo-800 dark:text-indigo-300">
+                        <span>⬆ Tx (Upload)</span>
+                        <span class="text-[10px] opacity-75">{{ formatPackets(currentTxPackets) }}</span>
+                    </div>
+                    <div class="mt-1 font-mono text-base font-bold text-indigo-700 dark:text-indigo-400">
+                        {{ formatSpeed(currentTxBps) }}
+                    </div>
+                    <div class="mt-0.5 text-[10px] text-indigo-600/80 dark:text-indigo-500">
+                        Peak: {{ formatSpeed(peakTxBps) }}
+                    </div>
                 </div>
             </div>
 
-            <!-- Tx Badge -->
-            <div class="rounded-lg border border-indigo-100 bg-indigo-50/70 p-2 dark:border-indigo-950 dark:bg-indigo-950/20">
-                <div class="flex items-center justify-between text-[11px] font-medium text-indigo-800 dark:text-indigo-300">
-                    <span>⬆ Tx (Upload)</span>
-                    <span class="text-[10px] opacity-75">{{ formatPackets(currentTxPackets) }}</span>
-                </div>
-                <div class="mt-1 font-mono text-base font-bold text-indigo-700 dark:text-indigo-400">
-                    {{ formatSpeed(currentTxBps) }}
-                </div>
-                <div class="mt-0.5 text-[10px] text-indigo-600/80 dark:text-indigo-500">
-                    Peak: {{ formatSpeed(peakTxBps) }}
-                </div>
-            </div>
-        </div>
-
-        <!-- Error notification if any -->
-        <div v-if="lastError" class="mt-2 rounded-md bg-rose-50 px-2.5 py-1 text-xs text-rose-600 dark:bg-rose-950/40 dark:text-rose-400 flex items-center justify-between">
-            <span>⚠ {{ lastError }}</span>
-            <button type="button" class="underline font-semibold ml-2" @click="fetchTraffic">Retry</button>
-        </div>
-
-        <!-- Warning if near capacity threshold -->
-        <div v-if="isNearCapacity" class="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300 flex items-center justify-between">
-            <span>🚨 Traffic mendekati ambang batas limit {{ capacityMbps }} Mbps (>85%)!</span>
-        </div>
-
-        <!-- Realtime Chart -->
-        <div class="mt-2" :class="heightClass">
-            <VChart ref="chartRef" :option="chartOption" autoresize class="h-full w-full" />
-        </div>
-
-        <!-- Card Bottom Toolbar: Threshold setting, Torch tool, Export buttons -->
-        <div class="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 pt-2 text-[11px] text-zinc-500 dark:border-zinc-800">
-            <!-- Capacity Threshold Input -->
-            <div class="flex items-center gap-1.5">
-                <span>Batas ISP:</span>
-                <input
-                    v-model.number="capacityMbps"
-                    type="number"
-                    placeholder="e.g. 100"
-                    min="1"
-                    max="10000"
-                    class="h-5 w-16 rounded border border-zinc-300 bg-zinc-50 px-1 text-center font-mono text-[10px] focus:border-indigo-500 focus:outline-hidden dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
-                    title="Masukkan kapasitas ISP (Mbps) untuk menampilkan garis limit merah"
-                />
-                <span class="text-zinc-400">Mbps</span>
+            <!-- Warning if near capacity threshold -->
+            <div
+                v-if="isNearCapacity"
+                class="mt-2 flex items-center justify-between rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+            >
+                <span>🚨 Traffic mendekati ambang batas limit {{ capacityMbps }} Mbps (>85%)!</span>
             </div>
 
-            <!-- Action shortcuts: Torch, CSV, PNG -->
-            <div class="flex items-center gap-2">
-                <a
-                    :href="route('routers.tools.index', routerId) + '?tool=torch&interface=' + selectedInterface"
-                    target="_blank"
-                    class="flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300"
-                    title="Buka MikroTik Torch untuk memantau top talker IP"
-                >
-                    🔥 Torch
-                </a>
-                <button
-                    type="button"
-                    class="rounded px-1.5 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                    title="Unduh data riwayat sebagai CSV"
-                    @click="exportCsv"
-                >
-                    📥 CSV
-                </button>
-                <button
-                    type="button"
-                    class="rounded px-1.5 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                    title="Ambil screenshot grafik sebagai gambar PNG"
-                    @click="exportPng"
-                >
-                    📷 PNG
-                </button>
+            <!-- Realtime Chart -->
+            <div class="mt-2" :class="heightClass">
+                <VChart ref="chartRef" :option="chartOption" autoresize class="h-full w-full" />
             </div>
-        </div>
+
+            <!-- Card Bottom Toolbar: Threshold setting, Torch tool, Export buttons -->
+            <div class="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 pt-2 text-[11px] text-zinc-500 dark:border-zinc-800">
+                <!-- Capacity Threshold Input -->
+                <div class="flex items-center gap-1.5">
+                    <span>Batas ISP:</span>
+                    <input
+                        v-model.number="capacityMbps"
+                        type="number"
+                        placeholder="e.g. 100"
+                        min="1"
+                        max="10000"
+                        class="h-5 w-16 rounded border border-zinc-300 bg-zinc-50 px-1 text-center font-mono text-[10px] focus:border-indigo-500 focus:outline-hidden dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                        title="Masukkan kapasitas ISP (Mbps) untuk menampilkan garis limit merah"
+                    />
+                    <span class="text-zinc-400">Mbps</span>
+                </div>
+
+                <!-- Action shortcuts: Torch, CSV, PNG -->
+                <div class="flex items-center gap-2">
+                    <a
+                        :href="route('routers.tools.index', routerId) + '?tool=torch&interface=' + selectedInterface"
+                        target="_blank"
+                        class="flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300"
+                        title="Buka MikroTik Torch untuk memantau top talker IP"
+                    >
+                        🔥 Torch
+                    </a>
+                    <button
+                        type="button"
+                        class="rounded px-1.5 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                        title="Unduh data riwayat sebagai CSV"
+                        @click="exportCsv"
+                    >
+                        📥 CSV
+                    </button>
+                    <button
+                        type="button"
+                        class="rounded px-1.5 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                        title="Ambil screenshot grafik sebagai gambar PNG"
+                        @click="exportPng"
+                    >
+                        📷 PNG
+                    </button>
+                </div>
+            </div>
+        </template>
+
+        <!-- ============================================================== -->
+        <!-- STATE 2: DISCONNECTED / INITIAL LOADING (Info Rx/Tx SEMBUNYI)   -->
+        <!-- ============================================================== -->
+        <template v-else>
+            <!-- Loading state -->
+            <div
+                v-if="isInitialLoading && !lastError"
+                class="my-3 flex flex-col items-center justify-center rounded-lg border border-dashed border-zinc-200 bg-zinc-50/50 p-6 text-center dark:border-zinc-800 dark:bg-zinc-800/30"
+                :class="heightClass"
+            >
+                <div class="h-6 w-6 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" />
+                <p class="mt-3 text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                    Menghubungkan ke {{ routerName }}...
+                </p>
+                <span class="mt-1 font-mono text-[11px] text-zinc-400">{{ routerHost }}</span>
+            </div>
+
+            <!-- Disconnected / Error state -->
+            <div
+                v-else
+                class="my-3 flex flex-col items-center justify-center rounded-lg border border-dashed border-rose-200 bg-rose-50/30 p-6 text-center dark:border-rose-950/50 dark:bg-rose-950/10"
+                :class="heightClass"
+            >
+                <div class="flex h-10 w-10 items-center justify-center rounded-full bg-rose-100 text-rose-600 dark:bg-rose-950 dark:text-rose-400">
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M18.364 5.636a9 9 0 010 12.728m-3.536-3.536a4 4 0 000-5.656m-7.072 0a4 4 0 000 5.656m-3.536 3.536a9 9 0 010-12.728M12 12h.01" />
+                    </svg>
+                </div>
+                <h4 class="mt-2.5 text-xs font-bold text-rose-800 dark:text-rose-300">
+                    Router Terputus / Tidak Terjangkau
+                </h4>
+                <p class="mt-1 max-w-xs text-[11px] text-zinc-500 dark:text-zinc-400">
+                    {{ lastError || 'Koneksi ke router gagal atau timeout.' }}
+                </p>
+                <div class="mt-3 flex items-center gap-2">
+                    <button
+                        type="button"
+                        class="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3 py-1 text-xs font-semibold text-white shadow-xs transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                        @click="fetchTraffic"
+                    >
+                        <span>↻ Coba Hubungkan Ulang</span>
+                    </button>
+                    <a
+                        :href="route('routers.show', routerId)"
+                        target="_blank"
+                        class="rounded-md border border-zinc-200 bg-white px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                    >
+                        Cek Konfigurasi
+                    </a>
+                </div>
+            </div>
+        </template>
     </div>
 </template>

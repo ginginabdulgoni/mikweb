@@ -39,17 +39,18 @@ class SendDailyDigestCommand extends Command
             $avgLatency = $metrics->isNotEmpty() ? round($metrics->avg('latency_ms')) : 0;
 
             $dateStr = now()->format('d M Y');
-            $msg = "📋 <b>RINGKASAN HARIAN ARMADA MIKROTIK ({$dateStr})</b>\n\n"
-                ."Organisasi: <b>{$org->name}</b>\n"
-                ."• Total Router: <b>{$total}</b> unit\n"
-                ."• Online: 🟢 <b>{$online}</b>\n"
-                ."• Terputus (Down): 🔴 <b>{$down}</b>\n"
-                ."• Rata-rata CPU 24 Jam: <b>{$avgCpu}%</b>\n"
-                ."• Rata-rata Latensi 24 Jam: <b>{$avgLatency} ms</b>\n\n"
-                .'Dashboard: <a href="'.config('app.url')."/monitoring\">Buka MikWeb Monitoring</a>\n"
-                .'<i>Laporan otomatis harian MikWeb</i>';
+            $vars = [
+                'org_name' => $org->name,
+                'total_routers' => (string) $total,
+                'online_routers' => (string) $online,
+                'down_routers' => (string) $down,
+                'avg_cpu' => (string) $avgCpu,
+                'avg_latency' => (string) $avgLatency,
+                'date' => $dateStr,
+                'time' => now()->format('d M Y H:i:s T'),
+            ];
 
-            $dispatcher->send($org, $msg, 'daily_digest');
+            $dispatcher->send($org, '', 'daily_digest', $vars);
             $this->info("Sent daily digest for {$org->name}");
         }
 

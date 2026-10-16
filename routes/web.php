@@ -315,6 +315,7 @@ Route::middleware('auth')->group(function () {
 
     // ── Monitoring ───────────────────────────────────────────────────
     Route::get('monitoring', [MonitoringController::class, 'index'])->name('monitoring.index');
+    Route::get('monitoring/fleet-stats', [MonitoringController::class, 'fleetStats'])->name('monitoring.fleet-stats');
     Route::post('monitoring/collect', [MonitoringController::class, 'collect'])->name('monitoring.collect');
     Route::post('monitoring/routers/{router}/collect', [MonitoringController::class, 'collectRouter'])->name('monitoring.routers.collect');
 

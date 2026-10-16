@@ -38,28 +38,33 @@ class CheckRouterFleetHealthCommand extends Command
             if ($currentStatus === RouterStatus::Unreachable->value && $previousStatus !== RouterStatus::Unreachable->value) {
                 $timeStr = now()->format('d M Y H:i:s T');
                 $err = $router->last_error ?: 'Koneksi ke host terputus / unreachable';
-                $msg = "🚨 <b>ALERT: ROUTER TERPUTUS (DOWN)</b>\n\n"
-                    ."Router: <b>{$router->name}</b>\n"
-                    ."Host / IP: <code>{$router->host}</code>\n"
-                    ."Waktu: <code>{$timeStr}</code>\n"
-                    ."Error: <i>{$err}</i>\n\n"
-                    .'<i>Segera periksa koneksi fisik, power supply, atau upstream ISP.</i>';
+                $vars = [
+                    'router_name' => $router->name,
+                    'router_host' => $router->host,
+                    'time' => $timeStr,
+                    'date' => now()->format('d M Y'),
+                    'error' => $err,
+                    'status' => 'Unreachable',
+                    'org_name' => $org->name,
+                ];
 
-                $dispatcher->send($org, $msg, 'router_down');
+                $dispatcher->send($org, '', 'router_down', $vars);
                 $this->info("Dispatched DOWN alert for {$router->name}");
             }
 
             // 2. Check RECOVERY transition
             if ($currentStatus === RouterStatus::Online->value && $previousStatus === RouterStatus::Unreachable->value) {
                 $timeStr = now()->format('d M Y H:i:s T');
-                $msg = "✅ <b>RECOVERY: ROUTER KEMBALI ONLINE</b>\n\n"
-                    ."Router: <b>{$router->name}</b>\n"
-                    ."Host / IP: <code>{$router->host}</code>\n"
-                    ."Waktu: <code>{$timeStr}</code>\n"
-                    ."Status: Normal (Reachable)\n\n"
-                    .'<i>Koneksi ke router telah pulih kembali.</i>';
+                $vars = [
+                    'router_name' => $router->name,
+                    'router_host' => $router->host,
+                    'time' => $timeStr,
+                    'date' => now()->format('d M Y'),
+                    'status' => 'Online',
+                    'org_name' => $org->name,
+                ];
 
-                $dispatcher->send($org, $msg, 'router_recovery');
+                $dispatcher->send($org, '', 'router_recovery', $vars);
                 $this->info("Dispatched RECOVERY alert for {$router->name}");
             }
 
@@ -77,14 +82,18 @@ class CheckRouterFleetHealthCommand extends Command
                     $throttleKey = "fleet:alert:high_cpu:{$router->id}";
                     if (! Cache::has($throttleKey)) {
                         $timeStr = now()->format('d M Y H:i:s T');
-                        $msg = "⚠️ <b>WARNING: HIGH CPU LOAD</b>\n\n"
-                            ."Router: <b>{$router->name}</b> ({$router->host})\n"
-                            ."CPU Load: <b>{$latestMetric->cpu_load}%</b> (Threshold: {$threshold}%)\n"
-                            ."Memory: <b>{$latestMetric->memoryPercent()}%</b>\n"
-                            ."Waktu: <code>{$timeStr}</code>\n\n"
-                            .'<i>Periksa rule firewall, loop interface, atau proses mencurigakan via MikWeb Tools / Profiler.</i>';
+                        $vars = [
+                            'router_name' => $router->name,
+                            'router_host' => $router->host,
+                            'cpu_load' => (string) $latestMetric->cpu_load,
+                            'threshold' => (string) $threshold,
+                            'mem_percent' => (string) $latestMetric->memoryPercent(),
+                            'time' => $timeStr,
+                            'date' => now()->format('d M Y'),
+                            'org_name' => $org->name,
+                        ];
 
-                        $dispatcher->send($org, $msg, 'high_cpu');
+                        $dispatcher->send($org, '', 'high_cpu', $vars);
                         // Throttle alert for 15 minutes to avoid spamming
                         Cache::put($throttleKey, true, now()->addMinutes(15));
                         $this->info("Dispatched HIGH CPU alert for {$router->name}");

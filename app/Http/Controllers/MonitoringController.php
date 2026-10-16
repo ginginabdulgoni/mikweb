@@ -9,7 +9,10 @@ use App\Domain\Monitoring\Models\RouterMetric;
 use App\Domain\Router\Enums\RouterStatus;
 use App\Domain\Router\Models\Router;
 use App\Jobs\CollectRouterMetricsJob;
+use App\Services\RouterOS\ConnectionManager;
+use App\Services\RouterOS\Contracts\RouterOsClient;
 use App\Support\Access\Permissions;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -17,7 +20,7 @@ use Inertia\Response;
 
 class MonitoringController extends Controller
 {
-    public function index(Request $request): Response
+    public function index(Request $request, CollectRouterMetrics $collector): Response
     {
         $this->authorize(Permissions::MONITORING_VIEW);
 
@@ -49,6 +52,19 @@ class MonitoringController extends Controller
         }
 
         $selectedIds = $routers->whereIn('id', $selectedIds)->pluck('id')->values()->all();
+
+        // If a selected router has never had metrics collected yet, run a sample so uptime/hardware isn't blank
+        foreach ($routers->whereIn('id', $selectedIds) as $r) {
+            if (! $latest->has($r->id) && $r->status === RouterStatus::Online) {
+                try {
+                    $r->loadMissing('credentials');
+                    $m = $collector->execute($r);
+                    $latest->put($r->id, $m);
+                } catch (\Throwable) {
+                    // ignore
+                }
+            }
+        }
         $selectedId = $selectedIds[0] ?? (int) ($routers->first()->id ?? 0);
         $range = $request->string('range')->toString() ?: '6h';
         $tab = $request->string('tab')->toString() ?: 'traffic';
@@ -100,8 +116,16 @@ class MonitoringController extends Controller
                     'status_color' => $r->status->color(),
                     'cpu_load' => $m?->cpu_load,
                     'mem_percent' => $m?->memoryPercent(),
+                    'mem_used' => $m?->mem_used,
+                    'mem_total' => $m?->mem_total,
+                    'disk_used' => $m?->disk_used,
+                    'disk_total' => $m?->disk_total,
+                    'uptime' => $m?->uptime,
                     'latency_ms' => $m?->latency_ms,
                     'recorded_at' => $m?->recorded_at?->diffForHumans(),
+                    'hardware_model' => $r->hardware_model ?: ($r->board_name ?: 'MikroTik Router'),
+                    'routeros_version' => $r->routeros_version ?: 'RouterOS',
+                    'architecture' => $r->architecture ?: 'mips/arm',
                 ];
             })->values(),
             'selectedRouter' => $selectedId,
@@ -147,5 +171,166 @@ class MonitoringController extends Controller
         } catch (\Throwable $e) {
             return back()->with('error', "Could not collect metrics from '{$router->name}': ".$e->getMessage());
         }
+    }
+
+    /**
+     * Polling endpoint for fleet statistics (Resources, Uptime, PPPoE & Hotspot counts).
+     * Fetches live metrics directly from MikroTik RouterOS for each requested router.
+     */
+    public function fleetStats(Request $request, ConnectionManager $connections): JsonResponse
+    {
+        $this->authorize(Permissions::MONITORING_VIEW);
+
+        // Release session file lock immediately so concurrent navigation / other tabs do not block
+        $request->session()->save();
+
+        $orgId = $request->user()->organization_id;
+
+        $routerIdsInput = $request->input('routers');
+        if (is_string($routerIdsInput)) {
+            $routerIds = array_values(array_filter(array_map('intval', explode(',', $routerIdsInput))));
+        } elseif (is_array($routerIdsInput)) {
+            $routerIds = array_values(array_filter(array_map('intval', $routerIdsInput)));
+        } else {
+            $routerIds = [];
+        }
+
+        $routers = Router::query()
+            ->where('organization_id', $orgId)
+            ->when(! empty($routerIds), fn ($q) => $q->whereIn('id', $routerIds))
+            ->get();
+
+        $stats = [];
+
+        foreach ($routers as $router) {
+            $router->loadMissing('credentials');
+
+            try {
+                $start = microtime(true);
+
+                $data = $connections->run($router, function (RouterOsClient $client): array {
+                    $resource = $client->query('/system/resource/print')[0] ?? [];
+
+                    $pppActive = [];
+                    $pppSecret = [];
+                    $hotspotActive = [];
+                    $hotspotUser = [];
+
+                    try {
+                        $pppActive = $client->query('/ppp/active/print');
+                    } catch (\Throwable) {
+                    }
+
+                    try {
+                        $pppSecret = $client->query('/ppp/secret/print');
+                    } catch (\Throwable) {
+                    }
+
+                    try {
+                        $hotspotActive = $client->query('/ip/hotspot/active/print');
+                    } catch (\Throwable) {
+                    }
+
+                    try {
+                        $hotspotUser = $client->query('/ip/hotspot/user/print');
+                    } catch (\Throwable) {
+                    }
+
+                    return [
+                        'resource' => $resource,
+                        'ppp_active' => count($pppActive),
+                        'ppp_secrets' => count($pppSecret),
+                        'hotspot_active' => count($hotspotActive),
+                        'hotspot_users' => count($hotspotUser),
+                    ];
+                });
+
+                $latency = (int) round((microtime(true) - $start) * 1000);
+                $resource = $data['resource'];
+
+                $total = (int) ($resource['total-memory'] ?? 0);
+                $free = (int) ($resource['free-memory'] ?? 0);
+                $diskTotal = (int) ($resource['total-hdd-space'] ?? 0);
+                $diskFree = (int) ($resource['free-hdd-space'] ?? 0);
+                $cpuLoad = isset($resource['cpu-load']) ? (int) $resource['cpu-load'] : null;
+                $memUsed = $total > 0 ? max(0, $total - $free) : null;
+                $diskUsed = $diskTotal > 0 ? max(0, $diskTotal - $diskFree) : null;
+                $uptime = $resource['uptime'] ?? null;
+                $memPercent = ($total > 0 && $memUsed !== null) ? (int) round(($memUsed / $total) * 100) : null;
+
+                // Also store RouterMetric to keep DB time-series alive
+                RouterMetric::create([
+                    'router_id' => $router->id,
+                    'cpu_load' => $cpuLoad,
+                    'mem_used' => $memUsed,
+                    'mem_total' => $total ?: null,
+                    'disk_used' => $diskUsed,
+                    'disk_total' => $diskTotal ?: null,
+                    'uptime' => $uptime,
+                    'reachable' => true,
+                    'latency_ms' => $latency,
+                    'recorded_at' => now(),
+                ]);
+
+                $router->forceFill([
+                    'status' => RouterStatus::Online,
+                    'last_seen_at' => now(),
+                    'last_error' => null,
+                ])->save();
+
+                $stats[$router->id] = [
+                    'id' => $router->id,
+                    'status' => 'online',
+                    'status_color' => 'emerald',
+                    'uptime' => $uptime,
+                    'cpu_load' => $cpuLoad,
+                    'mem_percent' => $memPercent,
+                    'mem_used' => $memUsed,
+                    'mem_total' => $total ?: null,
+                    'disk_used' => $diskUsed,
+                    'disk_total' => $diskTotal ?: null,
+                    'latency_ms' => $latency,
+                    'recorded_at' => 'Baru saja',
+                    'ppp' => [
+                        'active' => $data['ppp_active'],
+                        'secrets' => $data['ppp_secrets'],
+                    ],
+                    'hotspot' => [
+                        'active' => $data['hotspot_active'],
+                        'users' => $data['hotspot_users'],
+                    ],
+                ];
+            } catch (\Throwable $e) {
+                $stats[$router->id] = [
+                    'id' => $router->id,
+                    'status' => $router->status->value,
+                    'status_color' => $router->status->color(),
+                    'uptime' => null,
+                    'cpu_load' => null,
+                    'mem_percent' => null,
+                    'mem_used' => null,
+                    'mem_total' => null,
+                    'disk_used' => null,
+                    'disk_total' => null,
+                    'latency_ms' => null,
+                    'recorded_at' => 'Offline / Gagal',
+                    'error' => $e->getMessage(),
+                    'ppp' => [
+                        'active' => 0,
+                        'secrets' => 0,
+                    ],
+                    'hotspot' => [
+                        'active' => 0,
+                        'users' => 0,
+                    ],
+                ];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'routers' => $stats,
+            'timestamp' => now()->toIso8601String(),
+        ]);
     }
 }

@@ -19,7 +19,6 @@ const globalNav: NavItem[] = [
     { label: 'Routers', route: 'routers.index', icon: '⧉', ready: true },
     { label: 'Monitoring', route: 'monitoring.index', icon: '📈', ready: true },
     { label: 'Network Map', route: 'network.map', icon: '🗺️', ready: true },
-    { label: 'Pelanggan & CRM', route: 'customers.index', icon: '👥', ready: true },
     { label: 'Automation', route: 'automation.index', icon: '⚙', ready: true },
     { label: 'Bulk Ops', route: 'bulk.index', icon: '≣', ready: true },
     { label: 'Search', route: 'search.index', icon: '⌕', ready: true },
@@ -92,6 +91,41 @@ function isDeviceActive(name?: string): boolean {
 
 function connect(id: number) {
     pickerOpen.value = false;
+    const currentRoute = current();
+
+    // If currently on any router-scoped page (e.g. interfaces, ppp, hotspot, firewall, etc.),
+    // stay on the same page for the newly selected router.
+    if (
+        currentRoute &&
+        currentRoute.startsWith('routers.') &&
+        currentRoute !== 'routers.index' &&
+        currentRoute !== 'routers.create'
+    ) {
+        try {
+            // Keep query parameters (e.g. search, tab, filter) and replace router param with new id
+            const currentParams = (route().params as Record<string, any>) || {};
+            const params = { ...currentParams, router: id };
+            inertia.get(route(currentRoute, params));
+            return;
+        } catch {
+            try {
+                inertia.get(route(currentRoute, id));
+                return;
+            } catch {
+                // fallback to routers.show below
+            }
+        }
+    }
+
+    // If on monitoring page, switch the active router query parameter
+    if (currentRoute === 'monitoring.index') {
+        const url = new URL(window.location.href);
+        url.searchParams.set('router', String(id));
+        inertia.get(url.pathname + url.search);
+        return;
+    }
+
+    // Default fallback to Device Overview
     inertia.get(route('routers.show', id));
 }
 function logout() {

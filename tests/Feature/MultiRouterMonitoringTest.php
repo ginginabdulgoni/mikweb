@@ -51,6 +51,7 @@ class MultiRouterMonitoringTest extends TestCase
                 ->where('initialTab', 'traffic')
                 ->has('routers', 2)
                 ->where('selectedRouters', [$router1->id, $router2->id])
+                ->has('routers.0.hardware_model')
                 ->has('kpis')
                 ->has('chart')
             );
@@ -87,5 +88,51 @@ class MultiRouterMonitoringTest extends TestCase
                 'tx_packets',
                 'timestamp',
             ]);
+    }
+
+    public function test_fleet_stats_endpoint_returns_live_resources_and_pppoe_hotspot_counts(): void
+    {
+        $admin = $this->makeUser(Permissions::ROLE_NETWORK_ADMIN);
+        $router1 = Router::factory()->withApiCredential()->create(['organization_id' => $admin->organization_id, 'name' => 'Core-1']);
+        $router2 = Router::factory()->withApiCredential()->create(['organization_id' => $admin->organization_id, 'name' => 'Home-2']);
+
+        $response = $this->actingAs($admin)->get(route('monitoring.fleet-stats', [
+            'routers' => "{$router1->id},{$router2->id}",
+        ]));
+
+        $response->assertOk()
+            ->assertJsonStructure([
+                'success',
+                'routers' => [
+                    (string) $router1->id => [
+                        'id',
+                        'status',
+                        'uptime',
+                        'cpu_load',
+                        'mem_percent',
+                        'ppp' => ['active', 'secrets'],
+                        'hotspot' => ['active', 'users'],
+                    ],
+                    (string) $router2->id => [
+                        'id',
+                        'status',
+                        'uptime',
+                        'cpu_load',
+                        'mem_percent',
+                        'ppp' => ['active', 'secrets'],
+                        'hotspot' => ['active', 'users'],
+                    ],
+                ],
+                'timestamp',
+            ]);
+
+        $this->assertTrue($response->json('success'));
+        $this->assertNotNull($response->json("routers.{$router1->id}.uptime"));
+        $this->assertNotNull($response->json("routers.{$router2->id}.uptime"));
+    }
+
+    public function test_unauthenticated_cannot_access_fleet_stats(): void
+    {
+        $this->get(route('monitoring.fleet-stats'))->assertRedirect(route('login'));
     }
 }

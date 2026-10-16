@@ -12,14 +12,23 @@ use Illuminate\Support\Facades\Log;
 class NotificationDispatcher
 {
     /**
-     * Send an alert message to all configured notification channels for an organization.
+     * Send an alert message to configured notification channels for an organization.
      *
      * @param  string|null  $alertType  e.g. 'router_down', 'router_recovery', 'high_cpu', 'daily_digest', 'backup', 'security'
+     * @param  array<string, mixed>  $variables  Variables used to replace placeholders in custom alert templates
+     * @param  string|null  $channel  Filter channel: 'telegram', 'whatsapp', or null/'all'
+     * @param  NotificationSetting|null  $setting  Optional pre-loaded or in-memory setting override
      * @return array{telegram: bool, whatsapp: bool, errors: array<string>}
      */
-    public function send(Organization $org, string $message, ?string $alertType = null): array
-    {
-        $setting = NotificationSetting::firstWhere('organization_id', $org->id);
+    public function send(
+        Organization $org,
+        string $message,
+        ?string $alertType = null,
+        array $variables = [],
+        ?string $channel = null,
+        ?NotificationSetting $setting = null
+    ): array {
+        $setting = $setting ?? NotificationSetting::firstWhere('organization_id', $org->id);
         if (! $setting) {
             return ['telegram' => false, 'whatsapp' => false, 'errors' => ['No notification settings found']];
         }
@@ -29,26 +38,36 @@ class NotificationDispatcher
             return ['telegram' => false, 'whatsapp' => false, 'errors' => ["Alert type '{$alertType}' is disabled"]];
         }
 
+        // If alert type and variables are provided, render message using setting template
+        if ($alertType !== null && ! empty($variables)) {
+            $message = $setting->renderTemplate($alertType, $variables);
+        }
+
         $result = ['telegram' => false, 'whatsapp' => false, 'errors' => []];
 
+        $shouldSendTelegram = ($channel === null || $channel === 'all' || $channel === 'telegram') && $setting->hasTelegram();
+        $shouldSendWhatsApp = ($channel === null || $channel === 'all' || $channel === 'whatsapp') && $setting->hasWhatsApp();
+
         // 1. Telegram Dispatch
-        if ($setting->hasTelegram()) {
+        if ($shouldSendTelegram) {
             try {
                 $botToken = $setting->telegram_bot_token;
                 $chatId = $setting->telegram_chat_id;
 
                 $url = "https://api.telegram.org/bot{$botToken}/sendMessage";
-                $res = Http::timeout(8)->post($url, [
+                $res = Http::timeout(10)->post($url, [
                     'chat_id' => $chatId,
                     'text' => $message,
                     'parse_mode' => 'HTML',
                     'disable_web_page_preview' => true,
                 ]);
 
-                if ($res->successful()) {
+                $json = $res->json();
+                if ($res->successful() && ($json['ok'] ?? false) === true) {
                     $result['telegram'] = true;
                 } else {
-                    $err = 'Telegram API Error: '.$res->body();
+                    $desc = is_array($json) ? ($json['description'] ?? $res->body()) : ($res->body() ?: 'Gagal terhubung ke Telegram API');
+                    $err = 'Telegram API Error: '.$desc;
                     $result['errors'][] = $err;
                     Log::warning($err);
                 }
@@ -59,34 +78,92 @@ class NotificationDispatcher
             }
         }
 
-        // 2. WhatsApp Webhook Dispatch
-        if ($setting->hasWhatsApp()) {
+        // 2. WhatsApp Dispatch (Weagate / REST Gateway)
+        if ($shouldSendWhatsApp) {
             try {
-                $apiUrl = $setting->whatsapp_api_url;
+                $domain = trim($setting->whatsapp_api_url ?? '');
+                if (empty($domain)) {
+                    $domain = 'https://mywifi.weagate.com';
+                }
+                $endpoint = str_ends_with($domain, '/api/send-message')
+                    ? $domain
+                    : rtrim($domain, '/').'/api/send-message';
+
                 $apiToken = $setting->whatsapp_api_token;
-                $targetPhone = $setting->whatsapp_target_phone;
+                $targetPhone = $this->normalizePhone($setting->whatsapp_target_phone ?? '');
+                $deviceId = trim((string) ($setting->whatsapp_device_id ?? ''));
 
-                // Strip HTML tags for plain text WhatsApp message
-                $plainText = strip_tags(str_replace(['<br>', '<br/>', '</p>'], "\n", $message));
+                $plainText = $this->formatForWhatsApp($message);
 
-                $headers = ['Content-Type' => 'application/json'];
-                if ($apiToken) {
-                    $headers['Authorization'] = $apiToken;
+                $payload = array_filter([
+                    'token' => $apiToken,
+                    'to' => $targetPhone,
+                    'type' => 'text',
+                    'message' => $plainText,
+                    'id_devices' => $deviceId ?: null,
+                    'sender' => $deviceId ?: null,
+                    'instan' => '1',
+                ], static fn ($value) => $value !== null && $value !== '');
+
+                // Primary attempt via asForm
+                $res = Http::timeout(15)
+                    ->acceptJson()
+                    ->asForm()
+                    ->post($endpoint, $payload);
+
+                // Fallback attempt via JSON if 4xx/5xx
+                if (! $res->successful()) {
+                    $res = Http::timeout(15)
+                        ->acceptJson()
+                        ->post($endpoint, $payload);
                 }
 
-                // Generic WhatsApp payload (compatible with Fonnte / Wablas / custom gateways)
-                $payload = [
-                    'target' => $targetPhone,
-                    'phone' => $targetPhone,
-                    'receiver' => $targetPhone,
-                    'message' => $plainText,
-                ];
+                $rawBody = $res->body();
+                $json = $res->json();
+                $isSuccess = false;
 
-                $res = Http::withHeaders($headers)->timeout(8)->post($apiUrl, $payload);
                 if ($res->successful()) {
+                    if (is_array($json)) {
+                        $statusVal = $json['status'] ?? ($json['success'] ?? ($json['code'] ?? null));
+                        $msgVal = (string) ($json['message'] ?? ($json['detail'] ?? ''));
+
+                        // 1. Boolean check (handles true, 'true', 1, '1')
+                        if ($statusVal === true || filter_var($statusVal, FILTER_VALIDATE_BOOLEAN) === true) {
+                            $isSuccess = true;
+                        }
+                        // 2. String status keywords
+                        elseif (is_string($statusVal) && in_array(strtoupper(trim($statusVal)), ['SUCCESS', 'TRUE', 'OK', 'SENT', 'BERHASIL', '200', '1'], true)) {
+                            $isSuccess = true;
+                        }
+                        // 3. Integer status codes
+                        elseif ($statusVal === 200 || $statusVal === 1) {
+                            $isSuccess = true;
+                        }
+                        // 4. Message content indicator (e.g. "Pesan berhasil dikirim")
+                        elseif ($msgVal !== '' && (
+                            str_contains(strtolower($msgVal), 'berhasil')
+                            || str_contains(strtolower($msgVal), 'success')
+                            || str_contains(strtolower($msgVal), 'terkirim')
+                            || str_contains(strtolower($msgVal), 'sent')
+                        )) {
+                            $isSuccess = true;
+                        }
+                    } else {
+                        // Plain text response check
+                        $lowerBody = strtolower(trim($rawBody));
+                        if (str_contains($lowerBody, 'berhasil') || str_contains($lowerBody, 'success') || str_contains($lowerBody, 'terkirim') || str_contains($lowerBody, 'sent')) {
+                            $isSuccess = true;
+                        }
+                    }
+                }
+
+                if ($isSuccess) {
                     $result['whatsapp'] = true;
                 } else {
-                    $err = 'WhatsApp API Error: '.$res->body();
+                    $msg = is_array($json)
+                        ? ($json['message'] ?? ($json['detail'] ?? ($rawBody ?: 'Gagal mengirim pesan via Weagate')))
+                        : ($rawBody ?: 'Gagal mengirim pesan via Weagate');
+                    $err = 'WhatsApp Weagate Error: '.$msg;
                     $result['errors'][] = $err;
                     Log::warning($err);
                 }
@@ -98,6 +175,34 @@ class NotificationDispatcher
         }
 
         return $result;
+    }
+
+    public function normalizePhone(string $phone): string
+    {
+        $trimmed = trim($phone);
+        if (str_contains($trimmed, '@')) {
+            return $trimmed;
+        }
+
+        $digits = preg_replace('/\D/', '', $trimmed);
+        if (str_starts_with($digits, '08')) {
+            return '628'.substr($digits, 2);
+        }
+
+        return $digits;
+    }
+
+    public function formatForWhatsApp(string $message): string
+    {
+        $formatted = preg_replace('/<b[^>]*>(.*?)<\/b>/is', '*$1*', $message);
+        $formatted = preg_replace('/<strong[^>]*>(.*?)<\/strong>/is', '*$1*', $formatted);
+        $formatted = preg_replace('/<i[^>]*>(.*?)<\/i>/is', '_$1_', $formatted);
+        $formatted = preg_replace('/<em[^>]*>(.*?)<\/em>/is', '_$1_', $formatted);
+        $formatted = preg_replace('/<code[^>]*>(.*?)<\/code>/is', '`$1`', $formatted);
+        $formatted = preg_replace('/<pre[^>]*>(.*?)<\/pre>/is', "```\n$1\n```", $formatted);
+        $formatted = str_replace(['<br>', '<br/>', '<br />', '</p>'], "\n", $formatted);
+
+        return trim(strip_tags($formatted));
     }
 
     private function isAlertEnabled(NotificationSetting $setting, string $alertType): bool

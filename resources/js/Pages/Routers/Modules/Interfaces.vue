@@ -136,6 +136,15 @@ watch([searchQuery, statusFilter, typeFilter, perPage], () => {
     currentPage.value = 1;
 });
 
+watch(
+    () => props.router?.id,
+    () => {
+        selectedId.value = null;
+        selectedInterfaceIds.value = [];
+        currentPage.value = 1;
+    },
+);
+
 // Checkbox selection states
 const isAllSelected = computed(() => {
     if (paginatedInterfaces.value.length === 0) return false;

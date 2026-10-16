@@ -115,6 +115,13 @@ class InterfaceController extends Controller
     public function traffic(Request $request, Router $router, ResourceClient $client): JsonResponse
     {
         $this->ensureModuleAccess($router, Permissions::INTERFACE_VIEW);
+
+        // Immediately release the PHP session lock so any other menu navigation
+        // or requests from the same user are processed immediately without waiting.
+        if ($request->hasSession()) {
+            $request->session()->save();
+        }
+
         $interface = (string) $request->input('interface', 'ether1');
 
         try {
