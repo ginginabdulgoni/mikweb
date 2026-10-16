@@ -543,3 +543,4 @@ function getWhatsAppUrl(c: CustomerRow): string {
         </div>
     </AppLayout>
 </template>
+

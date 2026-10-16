@@ -171,3 +171,4 @@ function onChartClick(params: any) {
         </div>
     </AppLayout>
 </template>
+
