@@ -24,3 +24,15 @@ Schedule::job(new EvaluateAutomationJob)
     ->everyFiveMinutes()
     ->name('mikweb-automation')
     ->withoutOverlapping();
+
+// Router fleet health checks & proactive alerts (Telegram/WhatsApp)
+Schedule::command('fleet:check-health')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->runInBackground();
+
+// Daily fleet summary digest (08:00 WIB / local time)
+Schedule::command('fleet:daily-digest')
+    ->dailyAt('08:00')
+    ->withoutOverlapping()
+    ->runInBackground();

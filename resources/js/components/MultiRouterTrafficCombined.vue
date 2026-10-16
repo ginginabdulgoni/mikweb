@@ -58,6 +58,52 @@ function formatSpeed(bps: number): string {
     return Math.round(bps) + ' bps';
 }
 
+const combinedChartRef = ref<any>(null);
+
+function exportCombinedCsv(): void {
+    const timestamps = commonTimestamps.value;
+    if (timestamps.length === 0 || activeStreams.value.length === 0) return;
+
+    let headers = ['Timestamp'];
+    for (const s of activeStreams.value) {
+        headers.push(`${s.routerName} Rx (bps)`, `${s.routerName} Tx (bps)`);
+    }
+    let csv = headers.join(',') + '\n';
+
+    for (let i = 0; i < timestamps.length; i++) {
+        let row = [timestamps[i]];
+        for (const s of activeStreams.value) {
+            row.push(String(s.rxHistory[i] ?? 0), String(s.txHistory[i] ?? 0));
+        }
+        csv += row.join(',') + '\n';
+    }
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `fleet_traffic_combined_${Date.now()}.csv`;
+    link.click();
+}
+
+function exportCombinedPng(): void {
+    try {
+        const echartsInstance = combinedChartRef.value?.chart;
+        if (!echartsInstance) return;
+        const dataUrl = echartsInstance.getDataURL({
+            type: 'png',
+            pixelRatio: 2,
+            backgroundColor: '#18181b',
+        });
+        const link = document.createElement('a');
+        link.href = dataUrl;
+        link.download = `fleet_traffic_combined_${Date.now()}.png`;
+        link.click();
+    } catch {
+        // ignore
+    }
+}
+
 const activeStreams = computed(() => {
     return props.selectedRouterIds
         .map((id) => props.streams[id])
@@ -190,7 +236,7 @@ const chartOption = computed(() => {
                 </p>
             </div>
 
-            <!-- Fleet Aggregate Bandwidth Badges -->
+            <!-- Fleet Aggregate Bandwidth Badges & Export Buttons -->
             <div class="flex flex-wrap items-center gap-2">
                 <div class="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1.5 dark:border-zinc-700 dark:bg-zinc-800">
                     <span class="text-[10px] font-medium uppercase tracking-wider text-zinc-400">Total Throughput</span>
@@ -212,6 +258,26 @@ const chartOption = computed(() => {
                         {{ formatSpeed(aggregateTotals.totalTx) }}
                     </div>
                 </div>
+
+                <!-- Export Action Buttons -->
+                <div class="flex items-center gap-1.5 pl-2">
+                    <button
+                        type="button"
+                        class="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 shadow-xs hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                        title="Unduh seluruh riwayat trafik sebagai file CSV"
+                        @click="exportCombinedCsv"
+                    >
+                        📥 CSV
+                    </button>
+                    <button
+                        type="button"
+                        class="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 shadow-xs hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                        title="Unduh grafik gabungan sebagai gambar PNG"
+                        @click="exportCombinedPng"
+                    >
+                        📷 PNG
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -220,7 +286,7 @@ const chartOption = computed(() => {
             Pilih minimal 1 router di atas untuk menampilkan grafik realtime gabungan.
         </div>
         <div v-else :class="heightClass">
-            <VChart :option="chartOption" autoresize class="h-full w-full" />
+            <VChart ref="combinedChartRef" :option="chartOption" autoresize class="h-full w-full" />
         </div>
 
         <!-- Per-Router Bandwidth Breakdown Table -->
@@ -255,3 +321,4 @@ const chartOption = computed(() => {
         </div>
     </div>
 </template>
+

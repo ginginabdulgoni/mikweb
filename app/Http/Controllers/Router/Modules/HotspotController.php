@@ -40,6 +40,18 @@ class HotspotController extends Controller
 
     private const HOST = '/ip/hotspot/host';
 
+    public function printVouchers(Request $request, Router $router, ResourceClient $client): Response
+    {
+        $this->ensureModuleAccess($router, Permissions::HOTSPOT_VIEW);
+        $read = $this->deviceRead(fn () => $client->list($router, self::USER, userId: $request->user()->id));
+
+        return Inertia::render('Routers/Modules/HotspotPrint', [
+            'router' => RouterPresenter::header($router),
+            'users' => $read['data'],
+            'dnsName' => (string) $request->input('dns_name', ''),
+        ]);
+    }
+
     public function generateVouchers(Request $request, Router $router, ResourceClient $client): JsonResponse
     {
         $this->ensureModuleAccess($router, Permissions::HOTSPOT_MANAGE);

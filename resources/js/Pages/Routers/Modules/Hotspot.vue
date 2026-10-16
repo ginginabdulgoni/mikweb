@@ -1291,16 +1291,16 @@ function openPrintBatch() {
                             🎟️ Generate Voucher
                         </Btn>
 
-                        <Btn
+                        <a
                             v-if="(activeTab === 'users' || activeTab === 'non-aktif') && users.length > 0"
-                            size="sm"
-                            variant="ghost"
-                            title="Cetak Voucher Hotspot (Thermal / A4)"
-                            class="font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400"
-                            @click="openPrintBatch"
+                            :href="route('routers.hotspot.vouchers.print', router.id)"
+                            target="_blank"
+                            class="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50/60 px-2.5 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/60"
+                            title="Buka Lembar Cetak Lengkap (Grid A4 / Thermal 80mm / 58mm)"
                         >
-                            🖨️ Cetak Voucher {{ selectedUserIds.length > 0 ? `(${selectedUserIds.length})` : '' }}
-                        </Btn>
+                            <span>🖨️ Cetak Voucher Lembar / Thermal</span>
+                            <span class="text-[10px] opacity-75">↗</span>
+                        </a>
 
                         <Btn
                             v-if="can.manage && (activeTab === 'users' || activeTab === 'non-aktif' || activeTab === 'servers' || activeTab === 'ip-bindings')"

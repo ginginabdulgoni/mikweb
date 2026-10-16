@@ -8,9 +8,12 @@ use App\Http\Controllers\Auth\TwoFactorChallengeController;
 use App\Http\Controllers\AutomationController;
 use App\Http\Controllers\BackupController;
 use App\Http\Controllers\BulkController;
+use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\GlobalSearchController;
 use App\Http\Controllers\MonitoringController;
+use App\Http\Controllers\NetworkMapController;
+use App\Http\Controllers\NotificationSettingController;
 use App\Http\Controllers\Router\Modules\ArpController;
 use App\Http\Controllers\Router\Modules\BridgeController;
 use App\Http\Controllers\Router\Modules\DhcpClientController;
@@ -29,6 +32,7 @@ use App\Http\Controllers\Router\Modules\PppController;
 use App\Http\Controllers\Router\Modules\QueueController;
 use App\Http\Controllers\Router\Modules\RadiusController;
 use App\Http\Controllers\Router\Modules\RouteController;
+use App\Http\Controllers\Router\Modules\SecurityAuditController;
 use App\Http\Controllers\Router\Modules\SystemController;
 use App\Http\Controllers\Router\Modules\SystemUserController;
 use App\Http\Controllers\Router\Modules\TerminalController;
@@ -180,6 +184,7 @@ Route::middleware('auth')->group(function () {
 
         // Hotspot
         Route::get('hotspot', [HotspotController::class, 'index'])->name('hotspot.index');
+        Route::get('hotspot/vouchers/print', [HotspotController::class, 'printVouchers'])->name('hotspot.vouchers.print');
         Route::post('hotspot/vouchers/generate', [HotspotController::class, 'generateVouchers'])->name('hotspot.vouchers.generate');
         Route::post('hotspot/users', [HotspotController::class, 'storeUser'])->name('hotspot.users.store');
         Route::put('hotspot/users', [HotspotController::class, 'updateUser'])->name('hotspot.users.update');
@@ -302,6 +307,10 @@ Route::middleware('auth')->group(function () {
         // New Terminal
         Route::get('terminal', [TerminalController::class, 'index'])->name('terminal.index');
         Route::post('terminal/execute', [TerminalController::class, 'execute'])->name('terminal.execute');
+
+        // Security Auditor
+        Route::get('security/audit', [SecurityAuditController::class, 'index'])->name('security.audit');
+        Route::post('security/audit/fix', [SecurityAuditController::class, 'fix'])->name('security.audit.fix');
     });
 
     // ── Monitoring ───────────────────────────────────────────────────
@@ -337,6 +346,19 @@ Route::middleware('auth')->group(function () {
     Route::post('settings/security/2fa', [SecurityController::class, 'enable'])->name('settings.2fa.enable');
     Route::post('settings/security/2fa/confirm', [SecurityController::class, 'confirm'])->name('settings.2fa.confirm');
     Route::delete('settings/security/2fa', [SecurityController::class, 'disable'])->name('settings.2fa.disable');
+
+    // ── Customers & Billing CRM ──────────────────────────────────────
+    Route::resource('customers', CustomerController::class);
+    Route::post('customers/{customer}/mark-paid', [CustomerController::class, 'markPaid'])->name('customers.mark-paid');
+    Route::post('customers/{customer}/toggle-isolir', [CustomerController::class, 'toggleIsolir'])->name('customers.toggle-isolir');
+
+    // ── Network Topology Map ──────────────────────────────────────────
+    Route::get('network-map', [NetworkMapController::class, 'index'])->name('network.map');
+
+    // ── Notification Settings (Telegram & WhatsApp) ───────────────────
+    Route::get('settings/notifications', [NotificationSettingController::class, 'edit'])->name('settings.notifications.edit');
+    Route::post('settings/notifications', [NotificationSettingController::class, 'update'])->name('settings.notifications.update');
+    Route::post('settings/notifications/test', [NotificationSettingController::class, 'test'])->name('settings.notifications.test');
 
     // ── System Update ─────────────────────────────────────────────────
     Route::get('system/update', [SystemUpdateController::class, 'index'])->name('system.update.index');

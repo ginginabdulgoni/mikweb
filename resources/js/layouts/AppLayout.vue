@@ -18,9 +18,12 @@ const globalNav: NavItem[] = [
     { label: 'Dashboard', route: 'dashboard', icon: '▣', ready: true },
     { label: 'Routers', route: 'routers.index', icon: '⧉', ready: true },
     { label: 'Monitoring', route: 'monitoring.index', icon: '📈', ready: true },
+    { label: 'Network Map', route: 'network.map', icon: '🗺️', ready: true },
+    { label: 'Pelanggan & CRM', route: 'customers.index', icon: '👥', ready: true },
     { label: 'Automation', route: 'automation.index', icon: '⚙', ready: true },
     { label: 'Bulk Ops', route: 'bulk.index', icon: '≣', ready: true },
     { label: 'Search', route: 'search.index', icon: '⌕', ready: true },
+    { label: 'Notifikasi', route: 'settings.notifications.edit', icon: '🔔', ready: true },
     { label: 'System Update', route: 'system.update.index', icon: '🚀', ready: true },
 ];
 
@@ -43,6 +46,7 @@ const deviceMenu = computed<DeviceGroup[]>(() => [
             { label: 'DNS', route: 'routers.ip.dns.index', ready: true },
             { label: 'Firewall', route: 'routers.firewall.index', ready: true },
             { label: 'Hotspot', route: 'routers.hotspot.index', ready: true },
+            { label: 'Cetak Voucher', route: 'routers.hotspot.vouchers.print', ready: true },
             { label: 'Neighbors', route: 'routers.ip.neighbors.index', ready: true },
             { label: 'Pool', route: 'routers.ip.pool.index', ready: true },
             { label: 'Routes', route: 'routers.ip.routes.index', ready: true },
@@ -60,6 +64,7 @@ const deviceMenu = computed<DeviceGroup[]>(() => [
             { label: 'Backups', route: 'routers.backups.index', ready: true },
         ],
     },
+    { label: 'Security Auditor', icon: '🔒', items: [{ label: 'Security Auditor', route: 'routers.security.audit', ready: true }] },
     { label: 'Tools', icon: '🛠', items: [{ label: 'Tools & Netwatch', route: 'routers.tools.index', ready: true }] },
     { label: 'Terminal', icon: '💻', items: [{ label: 'New Terminal', route: 'routers.terminal.index', ready: true }] },
 ]);

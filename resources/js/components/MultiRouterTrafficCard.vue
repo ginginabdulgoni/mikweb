@@ -54,6 +54,8 @@ const selectedInterface = ref<string>('ether1');
 const isLoadingInterfaces = ref(false);
 const isPaused = ref(false);
 const lastError = ref<string | null>(null);
+const capacityMbps = ref<number | null>(null);
+const chartRef = ref<any>(null);
 
 const currentRxBps = ref<number>(0);
 const currentTxBps = ref<number>(0);
@@ -279,7 +281,46 @@ onUnmounted(() => {
     stopPolling();
 });
 
+const isNearCapacity = computed(() => {
+    if (!capacityMbps.value || capacityMbps.value <= 0) return false;
+    const limitBps = capacityMbps.value * 1_000_000;
+    return currentRxBps.value > limitBps * 0.85 || currentTxBps.value > limitBps * 0.85;
+});
+
+function exportCsv(): void {
+    let csv = 'Timestamp,Rx (bps),Tx (bps),Rx (Formatted),Tx (Formatted)\n';
+    for (let i = 0; i < timestamps.value.length; i++) {
+        csv += `${timestamps.value[i]},${rxData.value[i] || 0},${txData.value[i] || 0},"${formatSpeed(rxData.value[i] || 0)}","${formatSpeed(txData.value[i] || 0)}"\n`;
+    }
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `traffic_${props.routerName}_${selectedInterface.value}_${Date.now()}.csv`);
+    link.click();
+}
+
+function exportPng(): void {
+    try {
+        const echartsInstance = chartRef.value?.chart;
+        if (!echartsInstance) return;
+        const dataUrl = echartsInstance.getDataURL({
+            type: 'png',
+            pixelRatio: 2,
+            backgroundColor: '#18181b',
+        });
+        const link = document.createElement('a');
+        link.href = dataUrl;
+        link.download = `traffic_${props.routerName}_${selectedInterface.value}.png`;
+        link.click();
+    } catch {
+        // ignore
+    }
+}
+
 const chartOption = computed(() => {
+    const thresholdBps = capacityMbps.value && capacityMbps.value > 0 ? capacityMbps.value * 1_000_000 : null;
+
     return {
         animation: false,
         tooltip: {
@@ -334,6 +375,14 @@ const chartOption = computed(() => {
                 data: rxData.value,
                 lineStyle: { color: '#10b981', width: 2 },
                 areaStyle: { color: 'rgba(16, 185, 129, 0.15)' },
+                ...(thresholdBps ? {
+                    markLine: {
+                        silent: true,
+                        symbol: 'none',
+                        lineStyle: { color: '#ef4444', type: 'dashed', width: 1.5 },
+                        data: [{ yAxis: thresholdBps, label: { formatter: `Limit ${capacityMbps.value}M`, position: 'insideEndTop', color: '#ef4444', fontSize: 9 } }],
+                    },
+                } : {}),
             },
             {
                 name: 'Tx (Upload)',
@@ -455,9 +504,60 @@ const chartOption = computed(() => {
             <button type="button" class="underline font-semibold ml-2" @click="fetchTraffic">Retry</button>
         </div>
 
+        <!-- Warning if near capacity threshold -->
+        <div v-if="isNearCapacity" class="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300 flex items-center justify-between">
+            <span>🚨 Traffic mendekati ambang batas limit {{ capacityMbps }} Mbps (>85%)!</span>
+        </div>
+
         <!-- Realtime Chart -->
         <div class="mt-2" :class="heightClass">
-            <VChart :option="chartOption" autoresize class="h-full w-full" />
+            <VChart ref="chartRef" :option="chartOption" autoresize class="h-full w-full" />
+        </div>
+
+        <!-- Card Bottom Toolbar: Threshold setting, Torch tool, Export buttons -->
+        <div class="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 pt-2 text-[11px] text-zinc-500 dark:border-zinc-800">
+            <!-- Capacity Threshold Input -->
+            <div class="flex items-center gap-1.5">
+                <span>Batas ISP:</span>
+                <input
+                    v-model.number="capacityMbps"
+                    type="number"
+                    placeholder="e.g. 100"
+                    min="1"
+                    max="10000"
+                    class="h-5 w-16 rounded border border-zinc-300 bg-zinc-50 px-1 text-center font-mono text-[10px] focus:border-indigo-500 focus:outline-hidden dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                    title="Masukkan kapasitas ISP (Mbps) untuk menampilkan garis limit merah"
+                />
+                <span class="text-zinc-400">Mbps</span>
+            </div>
+
+            <!-- Action shortcuts: Torch, CSV, PNG -->
+            <div class="flex items-center gap-2">
+                <a
+                    :href="route('routers.tools.index', routerId) + '?tool=torch&interface=' + selectedInterface"
+                    target="_blank"
+                    class="flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700 transition hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300"
+                    title="Buka MikroTik Torch untuk memantau top talker IP"
+                >
+                    🔥 Torch
+                </a>
+                <button
+                    type="button"
+                    class="rounded px-1.5 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                    title="Unduh data riwayat sebagai CSV"
+                    @click="exportCsv"
+                >
+                    📥 CSV
+                </button>
+                <button
+                    type="button"
+                    class="rounded px-1.5 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                    title="Ambil screenshot grafik sebagai gambar PNG"
+                    @click="exportPng"
+                >
+                    📷 PNG
+                </button>
+            </div>
         </div>
     </div>
 </template>
